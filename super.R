@@ -23,10 +23,11 @@ list.of.packages <- c(
     "doParallel",
     "foreach",
     "gbm",
-    "GAMBoost"
+    "GAMBoost",
+    "randomForest"
     )
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
-if(length(new.packages)) install.packages(new.packages)
+if(length(new.packages)) install.packages(new.packages, contriburl="http://cran.us.r-project.org")
 
 #load libs
 lapply(list.of.packages, function(lib){
@@ -36,13 +37,28 @@ lapply(list.of.packages, function(lib){
 #-------------------------------------------------------------------------------
 #-----------------------Create Random Sample Test and Training Data-------------
 #-------------------------------------------------------------------------------
-training_data <- commandArgs(TRUE)[1]   
-#outputPdf <- commandArgs(TRUE)[2]   
+args <- commandArgs(TRUE)
+training_data <- args[1]   
+outtype <- args[2]   
+outfile <- args[3]
+
+outputPdf <- NA
+auc_out_file <- NA
+cat(length(args),"\n")
+if (length(args) != 3)
+{
+	stop("Usage : Rscript super.R <tab-separated training_data master table> <output type (PDF/raw)> <outputFileName>")
+}
+if (outtype == "PDF")
+{
+	outputPdf <- outfile
+} else if (outtype == "raw")
+{
+	auc_out_file <- outfile
+} else {
+	stop("Usage : Rscript super.R <tab-separated training_data master table> <output type (PDF/raw)> <outputFileName>")
+}
 observations = read.table(training_data, header = TRUE, sep="\t")
-#observations = read.table("test_super_mouse_data.tab", header = TRUE, sep="\t")
-#create unique id for observations file
-#observations <- data.frame(id=1:nrow(observations),observations) 
-#observations <- data.frame(id=observations[,1],observations[,-1])[,c("id","SRR058611.mouse_e115_heart_P300","SRR1029874.mouse_e115_heart_H3K27ac","HeartH3k04me1UE14half","label")]
 observations <- data.frame(id=observations[,1],observations[,-1])
 
 # Take 20% random sample of the data for testing, 80% for training
@@ -69,17 +85,18 @@ modelDataGlm <- foreach(i = 1:sampleCount) %dopar% {
 			}
 
 modelDataSvm <- foreach(i = 1:sampleCount) %dopar% {
-                  svm(x=trainSamples[[i]][,c(-1,-ncol(trainSamples[[i]]))], y=as.factor(trainSamples[[i]]$label), probability=TRUE, cost=10, gamma=0.1)
+                  svm(x=trainSamples[[i]][,c(-1,-ncol(trainSamples[[i]]))], y=as.factor(trainSamples[[i]]$label), probability=TRUE, cost=10, gamma=0.1, kernel="polynomial")
 			}
-#modelDataGamBoost <- foreach(i = 1:sampleCount) %dopar% {
-#			GAMBoost(as.matrix(trainSamples[[i]][,c(-1,-17)]), trainSamples[[i]][,17])
-#			}
 modelDataGbm <- foreach(i = 1:sampleCount) %dopar% {
+			#gbm(label ~ ., data=trainSamples[[i]][,-1], n.trees=1000, distribution = "bernoulli")
 			gbm(label ~ ., data=trainSamples[[i]][,-1], n.trees=1000, distribution = "adaboost")
 			}
 
 modelDataNB <- foreach(i = 1:sampleCount) %dopar% {
 			naiveBayes(label ~ ., data=trainSamples[[i]][,-1])
+			}
+modelDataRandomForest <- foreach(i = 1:sampleCount) %dopar% {
+			randomForest(x=as.matrix(trainSamples[[i]][,c(-1,-ncol(trainSamples[[i]]))]), y=as.factor(trainSamples[[i]]$label), ntree=500)
 			}
 #-------------------------------------------------------------------------------
 #-----------------------Predict the Test Data in Parallel Using Each Model------
@@ -105,6 +122,11 @@ predictDataGbm <- foreach(i = 1:sampleCount) %dopar% {
                           , probability=TRUE, n.trees=1000)
 		   }
 
+
+predictDataRandomForest <- foreach(i = 1:sampleCount) %dopar% {
+                    	predict(modelDataRandomForest[[i]], testData[,c(-1,-ncol(testData))]
+                          , type="prob")
+		   }
 predictDataNB <- foreach(i = 1:sampleCount) %dopar% {
                     predict(modelDataNB[[i]], testData[,c(-1,-ncol(testData))]
                           , type="raw")
@@ -126,7 +148,7 @@ rankPredictData <- function(predictData, getPofG, rankDataObject=NULL,reverseRan
                         Pg <- attr(predictData[[i]], "probabilities")[,c("1")]
 #                        Pg <-  unlist(predictData)
                         g  <- ifelse(Pg >= 0.5,1,0)
-                    } else if (getPofG == "naiveBayes"){
+                    } else if (getPofG == "naiveBayes" | getPofG == "randomForest"){
                         Pg <- predictData[[i]][,2]
                         g  <- ifelse(predictData[[i]][,"1"] >= predictData[[i]][,"0"],1,0)
                     } else if (getPofG == "gbm"){
@@ -174,39 +196,57 @@ rankGlm <- rankPredictData(predictDataGlm,"glmnet",NULL,FALSE,TRUE)
 rankSvm <- rankPredictData(predictDataSvm,"svm",NULL,FALSE,TRUE)
 rankGbm <- rankPredictData(predictDataGbm,"gbm",NULL,FALSE,TRUE)
 rankNaiveBayes <- rankPredictData(predictDataNB,"naiveBayes",NULL,FALSE,TRUE)
+rankRandomForest <- rankPredictData(predictDataRandomForest,"randomForest",NULL,FALSE,TRUE)
 rankGlmNoReg <- rankPredictData(predictDataGlmNoReg,"glm",NULL,FALSE,TRUE)
 
-
-#pdf(outputPdf)
 pred_glm <- prediction(predictions=rankGlm$finalRank,labels=rankGlm$actualClass)
 pred_svm <- prediction(predictions=rankSvm$finalRank,labels=rankSvm$actualClass)
 pred_gbm <- prediction(predictions=rankGbm$finalRank,labels=rankGbm$actualClass)
 pred_nb <- prediction(predictions=rankNaiveBayes$finalRank,labels=rankNaiveBayes$actualClass)
+pred_rf <- prediction(predictions=rankRandomForest$finalRank,labels=rankRandomForest$actualClass)
 pred_glm_noreg <- prediction(predictions=rankGlmNoReg$finalRank,labels=rankGlmNoReg$actualClass)
 
-#plot(performance(pred_glm, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="red")
-#par(new=TRUE)
-#plot(performance(pred_svm, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="blue", xlab="",ylab="", axes="n")
-#par(new=TRUE)
-#plot(performance(pred_gbm, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="green", xlab="",ylab="", axes="n")
-#par(new=TRUE)
-#plot(performance(pred_nb, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="purple", xlab="",ylab="", axes="n")
-#par(new=TRUE)
-#plot(performance(pred_glm_noreg, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="brown", xlab="",ylab="", axes="n")
 
-#perf_auc_glm <- paste("glmnet: ",round(performance(pred_glm, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
-#perf_auc_svm <- paste("svm: ",round(performance(pred_svm, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
-#perf_auc_gbm <- paste("gbm: ",round(performance(pred_gbm, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
-#perf_auc_nb <- paste("naiveBayes: ",round(performance(pred_nb, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
-#perf_auc_glm_noreg <- paste("glm: ",round(performance(pred_glm_noreg, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
 perf_auc_glm <- performance(pred_glm, measure="auc", x.measure="fpr")@y.values[[1]][1]
 perf_auc_svm <- performance(pred_svm, measure="auc", x.measure="fpr")@y.values[[1]][1]
 perf_auc_gbm <- performance(pred_gbm, measure="auc", x.measure="fpr")@y.values[[1]][1]
 perf_auc_nb <- performance(pred_nb, measure="auc", x.measure="fpr")@y.values[[1]][1]
+perf_auc_rf <- performance(pred_rf, measure="auc", x.measure="fpr")@y.values[[1]][1]
 perf_auc_glm_noreg <- performance(pred_glm_noreg, measure="auc", x.measure="fpr")@y.values[[1]][1]
-#legend("topleft",c(perf_auc_glm,perf_auc_svm,perf_auc_gbm,perf_auc_nb,perf_auc_glm_noreg), cex=0.6, bty="n", lty="solid", col=c("red","blue","green", "purple","brown"))
-#dev.off()
-row <- c(perf_auc_glm,perf_auc_svm,perf_auc_gbm,perf_auc_nb,perf_auc_glm_noreg)
-tissue <- commandArgs(TRUE)[2]
-write(row, file=paste("/home/si14w/my/auc_", tissue,sep=""), append=TRUE, sep="\t")
+
+
+if (!is.na(outputPdf))
+{
+	pdf(outputPdf)
+	pred_glm <- prediction(predictions=rankGlm$finalRank,labels=rankGlm$actualClass)
+	pred_svm <- prediction(predictions=rankSvm$finalRank,labels=rankSvm$actualClass)
+	pred_gbm <- prediction(predictions=rankGbm$finalRank,labels=rankGbm$actualClass)
+	pred_nb <- prediction(predictions=rankNaiveBayes$finalRank,labels=rankNaiveBayes$actualClass)
+	pred_glm_noreg <- prediction(predictions=rankGlmNoReg$finalRank,labels=rankGlmNoReg$actualClass)
+	pred_rf <- prediction(predictions=rankRandomForest$finalRank,labels=rankRandomForest$actualClass)
+	
+	plot(performance(pred_glm, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="red")
+	par(new=TRUE)
+	plot(performance(pred_svm, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="blue", xlab="",ylab="", axes="n")
+	par(new=TRUE)
+	plot(performance(pred_gbm, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="green", xlab="",ylab="", axes="n")
+	par(new=TRUE)
+	plot(performance(pred_nb, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="purple", xlab="",ylab="", axes="n")
+	par(new=TRUE)
+	plot(performance(pred_rf, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="orange", xlab="",ylab="", axes="n")
+	par(new=TRUE)
+	plot(performance(pred_glm_noreg, measure="tpr", x.measure="fpr"), main="", cex.main=0.6, bty="n", col="brown", xlab="",ylab="", axes="n")
+	
+	perf_auc_glm <- paste("glmnet: ",round(performance(pred_glm, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
+	perf_auc_svm <- paste("svm: ",round(performance(pred_svm, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
+	perf_auc_gbm <- paste("gbm: ",round(performance(pred_gbm, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
+	perf_auc_nb <- paste("naiveBayes: ",round(performance(pred_nb, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
+	perf_auc_rf <- paste("randomForest: ",round(performance(pred_rf, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
+	perf_auc_glm_noreg <- paste("glm: ",round(performance(pred_glm_noreg, measure="auc", x.measure="fpr")@y.values[[1]][1], digits=3), sep="")
+	legend("topleft",c(perf_auc_glm,perf_auc_svm,perf_auc_gbm,perf_auc_nb,perf_auc_rf,perf_auc_glm_noreg), cex=0.6, bty="n", lty="solid", col=c("red","blue","green", "purple","orange","brown"))
+	dev.off()
+} else {
+	row <- c(perf_auc_glm,perf_auc_svm,perf_auc_gbm,perf_auc_nb,perf_auc_rf, perf_auc_glm_noreg)
+	write(row, file=paste("/home/si14w/my/auc_", auc_out_file,sep=""), append=TRUE, sep="\t")
+}
 
