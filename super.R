@@ -11,7 +11,7 @@ source("/home/si14w/TR/classy/performance.R")
 #-------------------------------------------------------------------------------
 
 #number of bootstrap samples to create
-sampleCount <- 10
+sampleCount <- 11
 library(doMC)
 registerDoMC(cores=sampleCount)
 # setup libs
@@ -58,8 +58,9 @@ if (outtype == "PDF")
 } else {
 	stop("Usage : Rscript super.R <tab-separated training_data master table> <output type (PDF/raw)> <outputFileName>")
 }
-observations = read.table(training_data, header = TRUE, sep="\t")
+observations <- read.table(training_data, header = TRUE, sep="\t")
 observations <- data.frame(id=observations[,1],observations[,-1])
+rownames(observations) <- observations$id
 #set.seed(42)
 # Take 20% random sample of the data for testing, 80% for training
 testIndexes <- sample(1:nrow(observations), size=0.2*nrow(observations))
@@ -68,7 +69,7 @@ trainData <- observations[-testIndexes,]
 
 # Create random bootstrap training samples (with replacement) in parallel 
 trainSamples <- foreach(i = 1:sampleCount) %dopar% {
-		    #set.seed(i)
+#		    set.seed(i)
 		    sample_indices <- sample(1:nrow(trainData), size=0.3*nrow(trainData), replace=TRUE)
 			cat(sample_indices[1:10],"\n")
                     trainData[sample_indices,] 
@@ -80,31 +81,36 @@ trainSamples <- foreach(i = 1:sampleCount) %dopar% {
 modelDataGlmNoReg <- foreach(i = 1:sampleCount) %dopar% {
                   glm(label ~ ., data=trainSamples[[i]][,-1],family="binomial")
 			}
+cat("done modelDataGlmNoReg\n")
 modelDataGlm <- foreach(i = 1:sampleCount) %dopar% {
                   glmnet(x=as.matrix(trainSamples[[i]][,c(-1,-ncol(trainSamples[[i]]))]), y=as.factor(trainSamples[[i]]$label), family="binomial", alpha=1)
 			}
-
+cat("done modelDataGlm\n")
 modelDataSvm <- foreach(i = 1:sampleCount) %dopar% {
-                  svm(x=trainSamples[[i]][,c(-1,-ncol(trainSamples[[i]]))], y=as.factor(trainSamples[[i]]$label), probability=TRUE, cost=10^-5, gamma=0.1, kernel="linear")
+                  svm(x=trainSamples[[i]][,c(-1,-ncol(trainSamples[[i]]))], y=as.factor(trainSamples[[i]]$label), probability=TRUE, cost=10^-5, gamma=0.1, kernel="radial")
 			}
+cat("done svm\n")
 modelDataGbm <- foreach(i = 1:sampleCount) %dopar% {
-			cat(i,"\n")
-			#gbm(label ~ ., data=trainSamples[[i]][,-1], n.trees=1000, distribution = "bernoulli")
-			gbm(label ~ ., data=trainSamples[[i]][,-1], n.trees=1000, distribution = "adaboost")
+			gbm(label ~ ., data=trainSamples[[i]][,-1], n.trees=1000, distribution = "bernoulli",interaction.depth=4,cv.folds=0)
 			}
+cat("done gbm\n")			
 modelDataGam <- foreach(i = 1:sampleCount) %dopar% {
 			gam(label ~ ., data=trainSamples[[i]][,-1], family=binomial(link = "logit"))
 			}
-modelDataGamBoost <- foreach(i = 1:sampleCount) %dopar% {
-			gamboost(label ~ ., data=trainSamples[[i]][,-1])
-			}
+cat("done gam\n")			
+#modelDataGamBoost <- foreach(i = 1:sampleCount) %dopar% {
+#			gamboost(label ~ ., data=trainSamples[[i]][,-1])
+#			}
 
+#cat("done gamboost\n")			
 modelDataNB <- foreach(i = 1:sampleCount) %dopar% {
 			naiveBayes(label ~ ., data=trainSamples[[i]][,-1])
 			}
+cat("done nb\n")			
 modelDataRandomForest <- foreach(i = 1:sampleCount) %dopar% {
-			randomForest(x=as.matrix(trainSamples[[i]][,c(-1,-ncol(trainSamples[[i]]))]), y=as.factor(trainSamples[[i]]$label), ntree=500, importance=TRUE)
+			randomForest(x=as.matrix(trainSamples[[i]][,c(-1,-ncol(trainSamples[[i]]))]), y=as.factor(trainSamples[[i]]$label), ntree=1000, importance=TRUE)
 			}
+cat("done randomForest\n")			
 #-------------------------------------------------------------------------------
 #-----------------------Predict the Test Data in Parallel Using Each Model------
 #-------------------------------------------------------------------------------
@@ -153,27 +159,28 @@ predictDataGam <- foreach(i = 1:sampleCount) %dopar% {
 			}
 predictions[["gam"]] <- predictDataGam
 
-predictDataGamBoost <- foreach(i = 1:sampleCount) %dopar% {
-                    predict(modelDataGamBoost[[i]], testData[,c(-1,-ncol(testData))]
-                          , type="response")
-			}
-predictions[["gamboost"]] <- predictDataGamBoost
+#predictDataGamBoost <- foreach(i = 1:sampleCount) %dopar% {
+#                    predict(modelDataGamBoost[[i]], testData[,c(-1,-ncol(testData))]
+#                          , type="response")
+#			}
+#predictions[["gamboost"]] <- predictDataGamBoost
 
 #-------------------------------------------------------------------------------
 #-----------------------Rank Each Model's Bootstrap Data-------------------------
 #-------------------------------------------------------------------------------
-rankPredictData <- function(predictData, getPofG, rankDataObject=NULL){
+rankPredictData <- function(predictData, getPofG, rankDataObject=NULL) {
     rankData <- rankDataObject
+cat(getPofG,"\n")
     #Rank the test data's probability of g for each model
     rankCols <- foreach(i = 1:length(predictData)) %dopar% {
-                    if(getPofG == "svm"){
+                    if(getPofG == "svm") {
                         Pg <- attr(predictData[[i]], "probabilities")[,c("1")]
 #                        Pg <-  unlist(predictData)
                         g  <- ifelse(Pg >= 0.5,1,0)
-                    } else if (getPofG == "naiveBayes" | getPofG == "randomForest"){
+                    } else if (getPofG == "naiveBayes" | getPofG == "randomForest") {
                         Pg <- predictData[[i]][,2]
                         g  <- ifelse(predictData[[i]][,"1"] >= predictData[[i]][,"0"],1,0)
-                    } else if (getPofG == "gbm"){
+                    } else if (getPofG == "gbm") {
                         Pg <- predictData[[i]]
                         g  <- ifelse(Pg <=0,0,1)
                     } else if (getPofG == "glmnet" | getPofG == "glm" | getPofG == "gam" | getPofG == "gamboost") {
@@ -189,7 +196,8 @@ rankPredictData <- function(predictData, getPofG, rankDataObject=NULL){
     colOffset<-ifelse(is.null(rankData),0,ncol(rankData)-1)
     newRankData <- rankCols[[1]]
     colnames(newRankData)[2] <- paste("rank",colOffset + 1,sep='')
-    for(i in 2:length(rankCols)){
+    for(i in 2:length(rankCols))
+    {
         newRankData <- data.frame(newRankData, rankCols[[i]]$rankG)
 	colnames(rankCols[[i]])[1] <- "gVote"
         newRankData$gVote <- newRankData$gVote + rankCols[[i]]$gVote
@@ -214,8 +222,9 @@ rankPredictData <- function(predictData, getPofG, rankDataObject=NULL){
 rankTables <- list()
 pred <- list()
 perf_auc <- list()
-#methods <- c("glmnet","gbm","gamboost","randomForest")
-methods <- c("glmnet","svm","gbm","gam","gamboost","naiveBayes","randomForest","glm")
+#methods <- c("glmnet","gbm","randomForest")
+methods <- c("glmnet","svm","gbm","gam","naiveBayes","randomForest","glm")
+#methods <- c("glmnet","gbm","gam","randomForest","glm")
 rankTables[[methods[1]]] <- rankPredictData(predictions[[methods[1]]], methods[1], NULL)
 ensembleRankData <- data.frame(rankTables[[methods[1]]][,c("id","gVote","finalRank","actualClass")])
 pred[[methods[1]]] <- prediction(predictions=rankTables[[methods[1]]]$finalRank,labels=rankTables[[methods[1]]]$actualClass)
