@@ -57,6 +57,7 @@ tnr <- function (truth, predicted){
 #-------------------------------------------------------------------------------
 ppv <- function (truth, predicted){
         tTable   <- table(truth,predicted)
+	print(tTable)
         tp <- tTable[1,1]
         if(ncol(tTable)>1){ fp <- tTable[1,2] } else { fp <- 0}
         if(nrow(tTable)>1){ fn <- tTable[2,1] } else { fn <- 0}
@@ -72,4 +73,17 @@ ppv <- function (truth, predicted){
 fdr <- function (truth, predicted){
         ppv1 <- ppv(truth, predicted)
         return (1-ppv1)
+}
+
+#-------------------------------------------------------------------------------
+#-------Create Function To Measure Matthews Correlation Coefficient-------------
+#-------------------------------------------------------------------------------
+mcc <- function (truth, predicted){
+	        tTable   <- table(truth,predicted)
+        tp <- tTable[1,1]
+        if(ncol(tTable)>1){ fp <- tTable[1,2] } else { fp <- 0}
+        if(nrow(tTable)>1){ fn <- tTable[2,1] } else { fn <- 0}
+        if(ncol(tTable)>1 & nrow(tTable)>1){ tn <- tTable[2,2] } else { tn <- 0}
+        m <- ((tp*tn)-(fp*fn))/sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
+        return (m)
 }
