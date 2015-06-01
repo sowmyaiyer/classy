@@ -14,7 +14,7 @@ import java.util.Scanner;
 public class KmerCounter
 {
 	private static final Map<String, String> REVERSE_COMPLEMENTS_NT;
-	private static final Map<String, String> REVERSE_COMPLEMENTS_KMERS = new HashMap<String, String>();
+//	private static final Map<String, String> REVERSE_COMPLEMENTS_KMERS = new LinkedHashMap<String, String>();
     static
     {
     	REVERSE_COMPLEMENTS_NT = new HashMap<String, String>();
@@ -23,25 +23,6 @@ public class KmerCounter
     	REVERSE_COMPLEMENTS_NT.put("C", "G");
     	REVERSE_COMPLEMENTS_NT.put("T", "A");
     	REVERSE_COMPLEMENTS_NT.put("N", "N");
-    	String kmerFile = "/home/si14w/scratch/kmers_6.txt";
-    	//String kmerFile = "/Users/sowmyaiyer/Downloads/kmers.txt";
-    	Scanner sc_kmer = null;
-    	try
-    	{
-    		sc_kmer = new Scanner(new File(kmerFile));
-    		while (sc_kmer.hasNextLine())
-    		{
-    			String kmer = sc_kmer.nextLine();
-    			REVERSE_COMPLEMENTS_KMERS.put(kmer, getReverseComplement(kmer));
-    		}
-    		sc_kmer.close();
-    	} catch (FileNotFoundException fe)
-    	{
-    		fe.printStackTrace();
-    	}
-		
-		
-    	
     }
     
     private static String getReverseComplement (String str)
@@ -67,62 +48,87 @@ public class KmerCounter
 		String sequenceFile = args[0];
 		String outFile = args[1];
 		String kmerFile = args[2];
+		int k = new Integer(args[3]).intValue();
 		
-		final List<String> kmers = new ArrayList<String>();
-		List<String> sequences = new ArrayList<String>();
+		Map<String, Double>KMER_COUNTS_HASHMAP = new LinkedHashMap<String, Double>();
 		
-		Map<String, StringBuffer> kmer_dist = new LinkedHashMap<String, StringBuffer>(); 
+		Scanner sc_kmer = null;
+    	try
+    	{
+    		sc_kmer = new Scanner(new File(kmerFile));
+    		while (sc_kmer.hasNextLine())
+    		{
+    			String kmer = sc_kmer.nextLine();
+  //  			REVERSE_COMPLEMENTS_KMERS.put(kmer, getReverseComplement(kmer));
+    			// Initialize kmer counts hashmap to populate sequence kmer counts
+    			KMER_COUNTS_HASHMAP.put(kmer, 0.0);
+    		}
+    		sc_kmer.close();
+    	} catch (FileNotFoundException fe)
+    	{
+    		fe.printStackTrace();
+    	}
 		
-		Scanner sc_kmer = new Scanner(new File(kmerFile));
-		while (sc_kmer.hasNextLine())
-		{
-			String kmer = sc_kmer.nextLine();
-			kmer_dist.put(kmer, new StringBuffer());
-			kmers.add(kmer);
-		}
-		sc_kmer.close();
 		
-		Scanner sc_seq = new Scanner(new File(sequenceFile));
-		while (sc_seq.hasNextLine())
-		{
-			sequences.add(sc_seq.nextLine());
-		}
-		sc_seq.close();
-		
-		// Iterate through each kmer in kmer file, then for each sequence string slide k-sized window across each sequence
+		// Iterate through each sequence in sequence text file, then for each sequence string slide k-sized window across each sequence
 		// update master list as you go along
 		FileWriter fw = new FileWriter(outFile);
-		Iterator<String> it = kmer_dist.keySet().iterator();
-		while (it.hasNext())
+		fw.write("id\t");
+		Iterator<String> it_kmer = KMER_COUNTS_HASHMAP.keySet().iterator();
+		StringBuffer sb_kmer_title = new StringBuffer();
+		while (it_kmer.hasNext())
 		{
-			String thisKmer = it.next();
+			sb_kmer_title.append(it_kmer.next()).append("\t");
+		}
+		fw.write(sb_kmer_title.append("\n").toString());
+		
+		Scanner sc_seq = new Scanner(new File(sequenceFile));
+		Integer sequence_id = new Integer(1);
+		while (sc_seq.hasNextLine())
+		{
+			String thisSeq = sc_seq.nextLine();
+			double seqLen = thisSeq.length();
+			StringBuffer kmerCountsString = new StringBuffer(); 
+		
+			kmerCountsString.append("seq_").append(sequence_id.intValue()).append("\t");
+			//Map<String, Double> kmerMap_for_this_seq = sequence_kmer_dist.get("seq_"+sequence_id);
+			Map<String, Double> kmerMap_for_this_seq = new LinkedHashMap<String, Double>(KMER_COUNTS_HASHMAP); //initialize to 0 counts for new sequence
 			
-			StringBuffer thisKmerDist = kmer_dist.get(thisKmer);
-			int windowSize = thisKmer.length();
-
-			Iterator<String> it_seq = sequences.iterator();
-			while (it_seq.hasNext())
+			for (int i = 0; i < seqLen-k+1; i ++)
 			{
-				String thisSeq = it_seq.next();
-				double seqLen = thisSeq.length();
-				double count_in_seq = 0;
-
-				for (int i = 0; i < seqLen-windowSize+1; i ++)
+				String strInWindow = thisSeq.substring(i, i+k).toUpperCase();
+				double count_in_seq = 0.0;
+				//boolean kmer_exists_in_table = sequence_kmer_dist.get("seq_"+sequence_id).containsKey(strInWindow);
+				boolean kmer_exists_in_table = kmerMap_for_this_seq.containsKey(strInWindow);
+				if (kmer_exists_in_table)
 				{
-					String strInWindow = thisSeq.substring(i, i+windowSize).toUpperCase();
-					if (strInWindow.equals(thisKmer) || strInWindow.equals(REVERSE_COMPLEMENTS_KMERS.get(thisKmer)))
-					{
-						count_in_seq ++;
-					}
+					count_in_seq = kmerMap_for_this_seq.get(strInWindow).doubleValue();
+					count_in_seq = count_in_seq + (1/seqLen); // divide by seqLen to normalize by sequence length
+					kmerMap_for_this_seq.put(strInWindow, count_in_seq);
+					
 				}
-				//System.out.println(seqLen);
-				//System.out.println(count_in_seq);
-				thisKmerDist.append(count_in_seq/seqLen).append("\t"); //normalize number of occurrences by length of sequence
+				else
+				{
+					count_in_seq = kmerMap_for_this_seq.get(getReverseComplement(strInWindow)).doubleValue();
+					count_in_seq = count_in_seq + (1/seqLen); // divide by seqLen to normalize by sequence length
+					kmerMap_for_this_seq.put(getReverseComplement(strInWindow), count_in_seq);
+				}
+				
+				
 			}
-			fw.write(new StringBuffer().append(thisKmer).append("\t").append(thisKmerDist).append("\n").toString());
+			//sequence_kmer_dist.put("seq_"+sequence_id, kmerMap_for_this_seq);
+			Iterator<String> kmer_counts_it = KMER_COUNTS_HASHMAP.keySet().iterator();
+			while (kmer_counts_it.hasNext())
+			{
+				String kmer = kmer_counts_it.next();
+				kmerCountsString.append(kmerMap_for_this_seq.get(kmer)).append("\t"); 
+			}
+			
+			fw.write(new StringBuffer().append(kmerCountsString).append("\n").toString());
+			sequence_id ++;
 		}
 		fw.close();
+		sc_seq.close();
 		
 	}
-
 }
